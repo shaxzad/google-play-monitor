@@ -1,0 +1,27 @@
+{
+  "name": "google-play-monitor",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "scrape": "tsx src/index.ts",
+    "sync:apps": "tsx src/index.ts apps",
+    "sync:reviews": "tsx src/index.ts reviews",
+    "sync:all": "tsx src/index.ts all",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@mradex77/google-play-scraper": "^1.1.0",
+    "dotenv": "^17.4.2",
+    "mongodb": "^7.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
