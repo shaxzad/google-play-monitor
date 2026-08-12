@@ -9,7 +9,8 @@
     "sync:apps": "tsx src/index.ts apps",
     "sync:reviews": "tsx src/index.ts reviews",
     "sync:all": "tsx src/index.ts all",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "discover": "tsx src/index.ts discover"
   },
   "keywords": [],
   "author": "",

@@ -25,6 +25,39 @@ export interface SyncResult {
   error?: string;
 }
 
+/**
+ * Get all package names currently stored in MongoDB.
+ *
+ * MongoDB is the source of truth.
+ */
+export async function getPackageNames(db: Db): Promise<string[]> {
+  const apps = await db
+    .collection<{ packageName?: string }>("apps")
+    .find(
+      {
+        packageName: {
+          $exists: true,
+          $type: "string",
+        },
+      },
+      {
+        projection: {
+          packageName: 1,
+          _id: 0,
+        },
+      },
+    )
+    .toArray();
+
+  return Array.from(
+    new Set(
+      apps
+        .map((app) => app.packageName?.trim())
+        .filter((packageName): packageName is string => Boolean(packageName)),
+    ),
+  );
+}
+
 export async function syncApp(
   db: Db,
   packageName: string,
@@ -60,12 +93,22 @@ export async function syncApp(
 
 export async function syncApps(
   db: Db,
-  packageNames: string[],
+  packageNames?: string[],
 ): Promise<SyncResult[]> {
   const results: SyncResult[] = [];
 
+  /**
+   * If packageNames are provided, use them.
+   *
+   * Otherwise read directly from MongoDB.
+   */
+  const packages =
+    packageNames && packageNames.length > 0
+      ? packageNames
+      : await getPackageNames(db);
+
   const uniquePackages = Array.from(
-    new Set(packageNames.map((item) => item.trim()).filter(Boolean)),
+    new Set(packages.map((item) => item.trim()).filter(Boolean)),
   );
 
   console.log(`\n📱 Found ${uniquePackages.length} apps\n`);
@@ -88,6 +131,8 @@ export async function syncApps(
 }
 
 async function saveApp(db: Db, app: ScrapedApp): Promise<void> {
+  const now = new Date();
+
   await db.collection("apps").updateOne(
     {
       packageName: app.packageName,
@@ -95,10 +140,11 @@ async function saveApp(db: Db, app: ScrapedApp): Promise<void> {
     {
       $set: {
         ...app,
-        updatedAt: new Date(),
+        updatedAt: now,
       },
+
       $setOnInsert: {
-        createdAt: new Date(),
+        createdAt: now,
       },
     },
     {

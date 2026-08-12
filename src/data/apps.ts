@@ -1,9 +1,3 @@
-const apps = [
-  "com.whatsapp",
-  "com.spotify.music",
-  "com.instagram.android",
-  "com.google.android.youtube",
-  "com.canva.editor",
-];
+const apps: string[] = [];
 
 export default apps;

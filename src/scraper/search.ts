@@ -1,47 +1,50 @@
-import { search as googlePlaySearch } from "@mradex77/google-play-scraper";
+import gplay from "@mradex77/google-play-scraper";
 
 export interface SearchResult {
-  appId?: string;
-  title?: string;
-  developer?: string;
-  score?: number;
+  appId: string;
+  title: string;
+  developer: string;
   icon?: string;
+  score?: number;
   url?: string;
+  description?: string;
 }
 
+export interface SearchOptions {
+  limit?: number;
+  country?: string;
+  lang?: string;
+}
+
+/**
+ * Search Google Play for apps.
+ *
+ * Note:
+ * Google Play search results provide basic discovery
+ * information only. Detailed metadata such as ratings,
+ * review count, installs and genre should be fetched
+ * separately using the app details scraper.
+ */
 export async function searchApps(
   query: string,
-  limit = 20,
+  options: SearchOptions = {},
 ): Promise<SearchResult[]> {
-  const normalizedQuery = query.trim();
+  const { limit = 20, country = "us", lang = "en" } = options;
 
-  if (!normalizedQuery) {
-    throw new Error("Search query cannot be empty");
-  }
-
-  const results = await googlePlaySearch({
-    term: normalizedQuery,
+  const results = await gplay.search({
+    term: query,
     num: limit,
-    lang: process.env.GOOGLE_PLAY_LANGUAGE || "en",
-    country: process.env.GOOGLE_PLAY_COUNTRY || "us",
+    country,
+    lang,
   });
 
-  return results.map((item: unknown) => {
-    const result = item as Record<string, unknown>;
-
-    return {
-      appId: typeof result.appId === "string" ? result.appId : undefined,
-
-      title: typeof result.title === "string" ? result.title : undefined,
-
-      developer:
-        typeof result.developer === "string" ? result.developer : undefined,
-
-      score: typeof result.score === "number" ? result.score : undefined,
-
-      icon: typeof result.icon === "string" ? result.icon : undefined,
-
-      url: typeof result.url === "string" ? result.url : undefined,
-    };
-  });
+  return results.map((app) => ({
+    appId: app.appId,
+    title: app.title,
+    developer: app.developer,
+    icon: app.icon,
+    score: app.score,
+    url: app.url,
+    description: app.summary,
+  }));
 }
