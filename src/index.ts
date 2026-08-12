@@ -12,6 +12,8 @@ import { syncApps } from "./services/sync-apps.js";
 
 import { syncReviews } from "./services/sync-reviews.js";
 
+import { seedMonitoredApps } from "./services/seed-monitored-apps.js";
+
 async function main() {
   const command = process.argv[2] || "apps";
 
@@ -25,6 +27,10 @@ async function main() {
 
       case "reviews":
         await runReviewSync(db);
+        break;
+
+      case "seed":
+        await seedMonitoredApps(db);
         break;
 
       case "all":

@@ -70,6 +70,10 @@ async function createIndexes(db: Db): Promise<void> {
     publishedAt: -1,
   });
 
+  await db
+    .collection("monitored_apps")
+    .createIndex({ packageName: 1 }, { unique: true });
+
   console.log("✅ MongoDB indexes ready");
 }
 
