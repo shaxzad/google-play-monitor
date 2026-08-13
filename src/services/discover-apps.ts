@@ -1,15 +1,11 @@
 import { Collection } from "mongodb";
 
 import { getDB } from "../db/mongodb.js";
-
 import { scrapeApp, type ScrapedApp } from "../scraper/apps.js";
-
 import { searchApps, type SearchResult } from "../scraper/search.js";
-
 import searchQueries from "../data/search-queries.js";
 
-interface DiscoveryRecord {
-  packageName: string;
+interface DiscoveryInfo {
   query: string;
   rank: number;
   discoveredAt: Date;
@@ -20,6 +16,7 @@ export interface AppDocument extends ScrapedApp {
 
   discovery?: {
     queries: string[];
+    results: DiscoveryInfo[];
     firstDiscoveredAt: Date;
     lastDiscoveredAt: Date;
   };
@@ -47,79 +44,28 @@ function getAppsCollection(): Collection<AppDocument> {
   return getDB().collection<AppDocument>("apps");
 }
 
-function getDiscoveryCollection(): Collection<DiscoveryRecord> {
-  return getDB().collection<DiscoveryRecord>("app_discoveries");
-}
-
 /**
- * Ensures indexes required by discovery.
- */
-export async function ensureDiscoveryIndexes(): Promise<void> {
-  const appsCollection = getAppsCollection();
-  const discoveryCollection = getDiscoveryCollection();
-
-  await appsCollection.createIndex({ packageName: 1 }, { unique: true });
-
-  await appsCollection.createIndex({
-    "discovery.queries": 1,
-  });
-
-  await appsCollection.createIndex({
-    "discovery.lastDiscoveredAt": -1,
-  });
-
-  await appsCollection.createIndex({
-    updatedAt: -1,
-  });
-
-  await discoveryCollection.createIndex(
-    {
-      packageName: 1,
-      query: 1,
-      discoveredAt: 1,
-    },
-    {
-      unique: true,
-    },
-  );
-
-  await discoveryCollection.createIndex({
-    query: 1,
-    discoveredAt: -1,
-  });
-
-  await discoveryCollection.createIndex({
-    packageName: 1,
-    discoveredAt: -1,
-  });
-}
-
-/**
- * Discover apps from Google Play searches.
+ * Discover apps from Google Play search and save
+ * complete app information into the master `apps`
+ * collection.
  *
- * Search results are first deduplicated by packageName.
+ * IMPORTANT:
+ * Database indexes are managed centrally in
+ * src/db/mongodb.ts.
  *
- * Then complete app information is fetched once for
- * each unique app.
- *
- * Current app information is stored in `apps`.
- *
- * Search/ranking history is stored in `app_discoveries`.
+ * This service does NOT create indexes.
  */
 export async function discoverApps(
   options: DiscoverOptions = {},
 ): Promise<void> {
   const {
     limitPerQuery = 20,
-    country = "us",
-    lang = "en",
+    country = process.env.GOOGLE_PLAY_COUNTRY || "us",
+    lang = process.env.GOOGLE_PLAY_LANGUAGE || "en",
     delayMs = 1000,
   } = options;
 
-  const appsCollection = getAppsCollection();
-  const discoveryCollection = getDiscoveryCollection();
-
-  await ensureDiscoveryIndexes();
+  const collection = getAppsCollection();
 
   console.log("\n🔎 Google Play App Discovery");
   console.log("================================");
@@ -131,22 +77,21 @@ export async function discoverApps(
 
   /*
    * --------------------------------------------------
-   * STEP 1
-   *
-   * Search Google Play.
-   *
-   * Map packageName -> SearchResult + discovery data.
-   *
-   * This prevents scraping the same app multiple times
-   * if it appears in multiple queries.
+   * STEP 1: SEARCH GOOGLE PLAY
    * --------------------------------------------------
+   *
+   * First collect all search results.
+   *
+   * Map key = packageName.
+   *
+   * This prevents scraping the same app multiple
+   * times when it appears in multiple searches.
    */
-
   const discovered = new Map<
     string,
     {
       app: SearchResult;
-      discoveries: DiscoveryRecord[];
+      discoveries: DiscoveryInfo[];
     }
   >();
 
@@ -169,33 +114,26 @@ export async function discoverApps(
 
       searchFetched += results.length;
 
-      for (let index = 0; index < results.length; index++) {
-        const result = results[index];
+      results.forEach((app, index) => {
+        const rank = index + 1;
 
-        const packageName = result.appId?.trim();
-
-        if (!packageName) {
-          continue;
-        }
-
-        const discovery: DiscoveryRecord = {
-          packageName,
+        const discovery: DiscoveryInfo = {
           query,
-          rank: index + 1,
+          rank,
           discoveredAt: new Date(),
         };
 
-        const existing = discovered.get(packageName);
+        const existing = discovered.get(app.appId);
 
         if (existing) {
           existing.discoveries.push(discovery);
         } else {
-          discovered.set(packageName, {
-            app: result,
+          discovered.set(app.appId, {
+            app,
             discoveries: [discovery],
           });
         }
-      }
+      });
 
       console.log("   ✓ Search complete");
     } catch (error) {
@@ -225,16 +163,17 @@ export async function discoverApps(
 
   /*
    * --------------------------------------------------
-   * STEP 2
-   *
-   * Fetch complete app information.
+   * STEP 2: SCRAPE FULL APP DETAILS
    * --------------------------------------------------
+   *
+   * Search results are NOT the source of truth.
+   *
+   * For every unique packageName, fetch the complete
+   * Google Play app document using scrapeApp().
    */
-
   let appsInserted = 0;
   let appsUpdated = 0;
   let scrapeFailed = 0;
-  let discoveryInserted = 0;
 
   const discoveredApps = Array.from(discovered.entries());
 
@@ -248,62 +187,53 @@ export async function discoverApps(
 
       if (!scrapedApp) {
         console.log("   ✗ No app data returned");
-
         scrapeFailed++;
-
         continue;
       }
 
       const now = new Date();
 
       /*
-       * ----------------------------------------------
-       * SAVE CURRENT APP INFORMATION
-       * ----------------------------------------------
+       * Find the existing master app document.
+       *
+       * packageName is the unique source-of-truth key.
        */
-
-      const existing = await appsCollection.findOne({
+      const existing = await collection.findOne({
         packageName,
       });
 
       if (!existing) {
+        /*
+         * --------------------------------------------
+         * NEW APP
+         * --------------------------------------------
+         */
+
         const appDocument: AppDocument = {
           ...scrapedApp,
-
-          /*
-           * Do not persist `raw`.
-           *
-           * The scraper may return it internally,
-           * but it should not become duplicated
-           * MongoDB storage.
-           */
-          raw: undefined,
 
           packageName,
 
           discovery: {
-            queries: uniqueStrings(
-              discoveryData.discoveries.map((item) => item.query),
-            ),
+            queries: uniqueQueries(discoveryData.discoveries),
+
+            results: deduplicateDiscoveryResults(discoveryData.discoveries),
 
             firstDiscoveredAt: now,
+
             lastDiscoveredAt: now,
           },
 
           createdAt: now,
+
           updatedAt: now,
         };
 
-        /*
-         * Remove raw completely before inserting.
-         */
-        delete appDocument.raw;
-
-        await appsCollection.insertOne(appDocument);
+        await collection.insertOne(appDocument);
 
         appsInserted++;
 
-        console.log(`   ✓ ${scrapedApp.title ?? packageName} inserted`);
+        console.log(`   ✓ ${scrapedApp.title || packageName} inserted`);
       } else {
         /*
          * --------------------------------------------
@@ -319,28 +249,33 @@ export async function discoverApps(
           ...discoveryData.discoveries.map((item) => item.query),
         ]);
 
+        const existingDiscoveries = existing.discovery?.results ?? [];
+
+        const mergedDiscoveries = mergeDiscoveryResults(
+          existingDiscoveries,
+          discoveryData.discoveries,
+        );
+
         /*
-         * Preserve original createdAt.
+         * Update the master app document.
          *
-         * Only current app information is replaced.
+         * The latest scrape replaces the current app
+         * metadata, while discovery history is merged
+         * without duplicates.
          */
-        const updatedApp = {
-          ...scrapedApp,
-        };
-
-        delete updatedApp.raw;
-
-        await appsCollection.updateOne(
+        await collection.updateOne(
           {
             packageName,
           },
           {
             $set: {
-              ...updatedApp,
+              ...scrapedApp,
 
               packageName,
 
               "discovery.queries": newQueries,
+
+              "discovery.results": mergedDiscoveries,
 
               "discovery.lastDiscoveredAt": now,
 
@@ -351,52 +286,7 @@ export async function discoverApps(
 
         appsUpdated++;
 
-        console.log(`   ✓ ${scrapedApp.title ?? packageName} updated`);
-      }
-
-      /*
-       * --------------------------------------------
-       * SAVE DISCOVERY HISTORY
-       * --------------------------------------------
-       *
-       * Each discovery is stored separately.
-       *
-       * The unique index prevents exact duplicates.
-       *
-       * If the same app appears in another query,
-       * that becomes another discovery record.
-       */
-
-      for (const discovery of discoveryData.discoveries) {
-        try {
-          const result = await discoveryCollection.updateOne(
-            {
-              packageName: discovery.packageName,
-
-              query: discovery.query,
-
-              discoveredAt: discovery.discoveredAt,
-            },
-            {
-              $setOnInsert: discovery,
-            },
-            {
-              upsert: true,
-            },
-          );
-
-          if (result.upsertedCount > 0) {
-            discoveryInserted++;
-          }
-        } catch (error) {
-          /*
-           * Duplicate-key race conditions should not
-           * make the entire discovery process fail.
-           */
-          if (!isDuplicateKeyError(error)) {
-            throw error;
-          }
-        }
+        console.log(`   ✓ ${scrapedApp.title || packageName} updated`);
       }
     } catch (error) {
       scrapeFailed++;
@@ -424,31 +314,78 @@ export async function discoverApps(
   console.log("Discovery Completed");
   console.log("================================");
 
-  console.log(`Search results:       ${searchFetched}`);
-  console.log(`Unique apps:          ${discovered.size}`);
-  console.log(`Apps inserted:        ${appsInserted}`);
-  console.log(`Apps updated:         ${appsUpdated}`);
-  console.log(`Discoveries inserted: ${discoveryInserted}`);
-  console.log(`Failed searches:      ${searchFailed}`);
-  console.log(`Failed app scrape:    ${scrapeFailed}`);
+  console.log(`Search results:    ${searchFetched}`);
+  console.log(`Unique apps:       ${discovered.size}`);
+  console.log(`Apps inserted:     ${appsInserted}`);
+  console.log(`Apps updated:      ${appsUpdated}`);
+  console.log(`Failed searches:   ${searchFailed}`);
+  console.log(`Failed app scrape: ${scrapeFailed}`);
   console.log("");
 }
 
+/**
+ * Return unique strings while preserving order.
+ */
 function uniqueStrings(values: string[]): string[] {
-  return Array.from(
-    new Set(values.map((value) => value.trim()).filter(Boolean)),
-  );
+  return Array.from(new Set(values));
 }
 
-function isDuplicateKeyError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === 11000
-  );
+/**
+ * Extract unique search queries from discovery records.
+ */
+function uniqueQueries(discoveries: DiscoveryInfo[]): string[] {
+  return uniqueStrings(discoveries.map((item) => item.query));
 }
 
+/**
+ * Remove duplicate discovery records.
+ *
+ * Same query + same rank represents the same search
+ * position for our purposes.
+ */
+function deduplicateDiscoveryResults(
+  discoveries: DiscoveryInfo[],
+): DiscoveryInfo[] {
+  const unique = new Map<string, DiscoveryInfo>();
+
+  for (const item of discoveries) {
+    const key = `${item.query}::${item.rank}`;
+
+    if (!unique.has(key)) {
+      unique.set(key, item);
+    }
+  }
+
+  return Array.from(unique.values());
+}
+
+/**
+ * Merge existing and incoming discovery records
+ * without creating duplicates.
+ */
+function mergeDiscoveryResults(
+  existing: DiscoveryInfo[],
+  incoming: DiscoveryInfo[],
+): DiscoveryInfo[] {
+  const merged = [...existing];
+
+  for (const incomingItem of incoming) {
+    const alreadyExists = merged.some(
+      (item) =>
+        item.query === incomingItem.query && item.rank === incomingItem.rank,
+    );
+
+    if (!alreadyExists) {
+      merged.push(incomingItem);
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Delay helper.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
