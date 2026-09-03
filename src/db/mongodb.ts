@@ -1,6 +1,8 @@
 import { Db, MongoClient } from "mongodb";
 import dotenv from "dotenv";
 
+import { runMigrations } from "./migrations.js";
+
 dotenv.config();
 
 /**
@@ -39,6 +41,8 @@ export async function connectDB(): Promise<Db> {
   database = client.db(dbName);
 
   console.log(`✅ MongoDB connected: ${dbName}`);
+
+  await runMigrations(database);
 
   await createIndexes(database);
 
@@ -84,255 +88,144 @@ export function getDB(): Db {
 async function createIndexes(db: Db): Promise<void> {
   /*
    * ==================================================
-   * APPS
+   * APPS  — identity (platform, appId)
    * ==================================================
-   *
-   * One document per Google Play package.
-   *
-   * This is the main source-of-truth collection.
    */
 
-  await db.collection("apps").createIndex(
-    { packageName: 1 },
-    {
-      unique: true,
-      name: "apps_packageName_unique",
-    },
-  );
+  await db
+    .collection("apps")
+    .createIndex(
+      { platform: 1, appId: 1 },
+      { unique: true, name: "apps_platform_appId_unique" },
+    );
 
-  /*
-   * Useful for filtering applications by category.
-   */
-  await db.collection("apps").createIndex(
-    { genre: 1 },
-    {
-      name: "apps_genre",
-    },
-  );
-
-  /*
-   * Useful for recommendation/filtering by rating.
-   */
-  await db.collection("apps").createIndex(
-    { score: -1 },
-    {
-      name: "apps_score_desc",
-    },
-  );
-
-  /*
-   * Useful for popularity filtering.
-   */
-  await db.collection("apps").createIndex(
-    { ratings: -1 },
-    {
-      name: "apps_ratings_desc",
-    },
-  );
-
-  /*
-   * Useful for filtering by number of reviews.
-   */
-  await db.collection("apps").createIndex(
-    { reviews: -1 },
-    {
-      name: "apps_reviews_desc",
-    },
-  );
-
-  /*
-   * Useful for finding recently updated/scraped apps.
-   */
-  await db.collection("apps").createIndex(
-    { updatedAt: -1 },
-    {
-      name: "apps_updatedAt_desc",
-    },
-  );
+  await db.collection("apps").createIndex({ genre: 1 }, { name: "apps_genre" });
+  await db
+    .collection("apps")
+    .createIndex({ score: -1 }, { name: "apps_score_desc" });
+  await db
+    .collection("apps")
+    .createIndex({ ratings: -1 }, { name: "apps_ratings_desc" });
+  await db
+    .collection("apps")
+    .createIndex({ updatedAt: -1 }, { name: "apps_updatedAt_desc" });
 
   /*
    * ==================================================
-   * REVIEWS
+   * REVIEWS  — identity (platform, appId, reviewId)
    * ==================================================
-   *
-   * One review per:
-   *
-   * packageName + reviewId
-   *
-   * reviewId is checked before saving in sync-reviews.ts,
-   * therefore sparse indexing is not required.
    */
 
   await db.collection("reviews").createIndex(
-    {
-      packageName: 1,
-      reviewId: 1,
-    },
-    {
-      unique: true,
-      name: "reviews_packageName_reviewId_unique",
-    },
+    { platform: 1, appId: 1, reviewId: 1 },
+    { unique: true, name: "reviews_platform_appId_reviewId_unique" },
   );
 
-  /*
-   * Useful for:
-   *
-   * GET /apps/:packageName/reviews
-   *
-   * sorted by newest.
-   */
   await db.collection("reviews").createIndex(
-    {
-      packageName: 1,
-      publishedAt: -1,
-    },
-    {
-      name: "reviews_packageName_publishedAt_desc",
-    },
+    { platform: 1, appId: 1, publishedAt: -1 },
+    { name: "reviews_platform_appId_publishedAt_desc" },
   );
 
-  /*
-   * Useful for filtering reviews by rating.
-   *
-   * Example:
-   * - 1 star reviews
-   * - 5 star reviews
-   */
-  await db.collection("reviews").createIndex(
-    {
-      packageName: 1,
-      rating: 1,
-    },
-    {
-      name: "reviews_packageName_rating",
-    },
-  );
+  await db
+    .collection("reviews")
+    .createIndex(
+      { platform: 1, appId: 1, rating: 1 },
+      { name: "reviews_platform_appId_rating" },
+    );
 
   /*
    * ==================================================
-   * APP SNAPSHOTS
+   * APP SNAPSHOTS  — history keyed (platform, appId, scrapedAt)
    * ==================================================
-   *
-   * Historical app metrics.
-   *
-   * Example:
-   *
-   * Day 1:
-   * score = 4.5
-   * reviews = 100000
-   *
-   * Day 2:
-   * score = 4.4
-   * reviews = 101000
-   *
-   * This allows future analytics and trend detection.
    */
 
   await db.collection("app_snapshots").createIndex(
-    {
-      packageName: 1,
-      scrapedAt: -1,
-    },
-    {
-      name: "snapshots_packageName_scrapedAt_desc",
-    },
+    { platform: 1, appId: 1, scrapedAt: -1 },
+    { name: "snapshots_platform_appId_scrapedAt_desc" },
   );
 
   /*
    * ==================================================
-   * APP DISCOVERIES
+   * AFFILIATE TARGETS  — the fetch allowlist
    * ==================================================
-   *
-   * Search/discovery history.
-   *
-   * Example:
-   *
-   * query:
-   * "casino slots real money"
-   *
-   * app:
-   * com.example.casino
-   *
-   * rank:
-   * 3
-   *
-   * This information can later be used for:
-   *
-   * - search popularity
-   * - ranking analysis
-   * - category analysis
-   * - recommendation scoring
-   * - affiliate research
    */
 
-  await db.collection("app_discoveries").createIndex(
-    {
-      packageName: 1,
-      query: 1,
-      discoveredAt: 1,
-    },
-    {
-      unique: true,
-      name: "discoveries_package_query_date_unique",
-    },
+  await db.collection("affiliate_targets").createIndex(
+    { platform: 1, appId: 1 },
+    { unique: true, name: "targets_platform_appId_unique" },
   );
 
-  /*
-   * Find recent results for a particular search query.
-   */
-  await db.collection("app_discoveries").createIndex(
-    {
-      query: 1,
-      discoveredAt: -1,
-    },
-    {
-      name: "discoveries_query_date_desc",
-    },
-  );
-
-  /*
-   * Find discovery history for a particular application.
-   */
-  await db.collection("app_discoveries").createIndex(
-    {
-      packageName: 1,
-      discoveredAt: -1,
-    },
-    {
-      name: "discoveries_package_date_desc",
-    },
-  );
-
-  /*
-   * Useful for analyzing app ranking within a search query.
-   */
-  await db.collection("app_discoveries").createIndex(
-    {
-      query: 1,
-      rank: 1,
-    },
-    {
-      name: "discoveries_query_rank",
-    },
-  );
+  await db
+    .collection("affiliate_targets")
+    .createIndex({ status: 1 }, { name: "targets_status" });
+  await db
+    .collection("affiliate_targets")
+    .createIndex(
+      { operatorId: 1 },
+      { name: "targets_operatorId", sparse: true },
+    );
+  await db
+    .collection("affiliate_targets")
+    .createIndex(
+      { affiliateProgramId: 1 },
+      { name: "targets_affiliateProgramId", sparse: true },
+    );
+  await db
+    .collection("affiliate_targets")
+    .createIndex(
+      { affiliateCampaignId: 1 },
+      { name: "targets_affiliateCampaignId", sparse: true },
+    );
+  await db
+    .collection("affiliate_targets")
+    .createIndex({ lastCheckedAt: 1 }, { name: "targets_lastCheckedAt" });
 
   /*
    * ==================================================
-   * MONITORED APPS
+   * AFFILIATE ENTITIES
    * ==================================================
-   *
-   * Apps explicitly selected for ongoing monitoring.
    */
 
-  await db.collection("monitored_apps").createIndex(
-    {
-      packageName: 1,
-    },
-    {
-      unique: true,
-      name: "monitored_apps_packageName_unique",
-    },
+  await db
+    .collection("operators")
+    .createIndex({ id: 1 }, { unique: true, name: "operators_id_unique" });
+  await db
+    .collection("operators")
+    .createIndex({ slug: 1 }, { name: "operators_slug" });
+
+  await db
+    .collection("affiliate_programs")
+    .createIndex({ id: 1 }, { unique: true, name: "programs_id_unique" });
+  await db
+    .collection("affiliate_programs")
+    .createIndex({ operatorId: 1 }, { name: "programs_operatorId" });
+
+  await db
+    .collection("affiliate_campaigns")
+    .createIndex({ id: 1 }, { unique: true, name: "campaigns_id_unique" });
+  await db
+    .collection("affiliate_campaigns")
+    .createIndex(
+      { affiliateProgramId: 1 },
+      { name: "campaigns_affiliateProgramId" },
+    );
+
+  /*
+   * ==================================================
+   * APP CANDIDATES  — discovery staging (never fetched)
+   * ==================================================
+   */
+
+  await db.collection("app_candidates").createIndex(
+    { platform: 1, appId: 1 },
+    { unique: true, name: "candidates_platform_appId_unique" },
   );
+  await db
+    .collection("app_candidates")
+    .createIndex({ status: 1 }, { name: "candidates_status" });
+  await db
+    .collection("app_candidates")
+    .createIndex({ lastDiscoveredAt: -1 }, { name: "candidates_lastDiscoveredAt_desc" });
 
   console.log("✅ MongoDB indexes ready");
 }

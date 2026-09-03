@@ -1,8 +1,24 @@
-import { Db } from "mongodb";
+import type { Db } from "mongodb";
 
-import { scrapeApp, type ScrapedApp } from "../scraper/apps.js";
-
+import type { AppPlatform } from "../types/platform.js";
+import type { NormalizedApp, AppDocument } from "../types/app.js";
+import type { AffiliateTarget } from "../types/affiliate.js";
+import type { AppStoreProvider } from "../providers/types.js";
+import { getActiveTargets, markTargetChecked } from "./targets.js";
 import { createAppSnapshot } from "./snapshots.js";
+
+/**
+ * Target-driven app synchronization.
+ *
+ * The set of apps to fetch comes EXCLUSIVELY from ACTIVE affiliate targets
+ * (see {@link getActiveTargets}). This module never queries the `apps`
+ * collection to decide what to fetch — that would resurrect the
+ * "sync everything we've ever seen" anti-pattern.
+ *
+ * A failure fetching one target is isolated: it is recorded and the loop
+ * continues with the next target. Only a successful fetch writes to `apps`
+ * and appends a snapshot.
+ */
 
 function getDelay(): number {
   const value = Number(process.env.SCRAPE_DELAY_MS);
@@ -19,110 +35,89 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 export interface SyncResult {
-  packageName: string;
+  platform: AppPlatform;
+  appId: string;
   success: boolean;
   title?: string;
+  snapshotCreated?: boolean;
   error?: string;
 }
 
 /**
- * Get all package names currently stored in MongoDB.
- *
- * MongoDB is the source of truth.
+ * Fetch, persist, and snapshot a single app for a given target.
+ * Never throws — failures are returned as `success: false`.
  */
-export async function getPackageNames(db: Db): Promise<string[]> {
-  const apps = await db
-    .collection<{ packageName?: string }>("apps")
-    .find(
-      {
-        packageName: {
-          $exists: true,
-          $type: "string",
-        },
-      },
-      {
-        projection: {
-          packageName: 1,
-          _id: 0,
-        },
-      },
-    )
-    .toArray();
-
-  return Array.from(
-    new Set(
-      apps
-        .map((app) => app.packageName?.trim())
-        .filter((packageName): packageName is string => Boolean(packageName)),
-    ),
-  );
-}
-
-export async function syncApp(
+export async function syncTarget(
   db: Db,
-  packageName: string,
+  provider: AppStoreProvider,
+  target: AffiliateTarget,
 ): Promise<SyncResult> {
-  try {
-    console.log(`🔍 Fetching ${packageName}...`);
+  const { platform, appId } = target;
 
-    const app = await scrapeApp(packageName);
+  try {
+    console.log(`🔍 Fetching ${platform}:${appId}...`);
+
+    const app = await provider.getApp(appId);
 
     await saveApp(db, app);
 
-    await createAppSnapshot(db, app);
+    const scrapedAt = app.provenance.fetchedAt;
+    const snapshotCreated = await createAppSnapshot(db, app, scrapedAt);
 
-    console.log(`✓ ${app.title || packageName} saved`);
+    await markTargetChecked(db, platform, appId, scrapedAt);
 
-    return {
-      packageName,
+    console.log(`✓ ${app.name ?? appId} saved`);
+
+    const result: SyncResult = {
+      platform,
+      appId,
       success: true,
-      title: app.title,
+      snapshotCreated,
     };
+
+    if (app.name !== undefined) {
+      result.title = app.name;
+    }
+
+    return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    console.error(`❌ ${packageName}: ${message}`);
+    console.error(`❌ ${platform}:${appId}: ${message}`);
 
     return {
-      packageName,
+      platform,
+      appId,
       success: false,
       error: message,
     };
   }
 }
 
-export async function syncApps(
+/**
+ * Sync every ACTIVE target for the provider's platform, sequentially, with a
+ * configurable delay between requests.
+ */
+export async function syncActiveTargets(
   db: Db,
-  packageNames?: string[],
+  provider: AppStoreProvider,
 ): Promise<SyncResult[]> {
+  const targets = await getActiveTargets(db, provider.platform);
+
+  console.log(`\n📱 Found ${targets.length.toString()} active targets\n`);
+
   const results: SyncResult[] = [];
 
-  /**
-   * If packageNames are provided, use them.
-   *
-   * Otherwise read directly from MongoDB.
-   */
-  const packages =
-    packageNames && packageNames.length > 0
-      ? packageNames
-      : await getPackageNames(db);
+  for (let index = 0; index < targets.length; index++) {
+    const target = targets[index];
 
-  const uniquePackages = Array.from(
-    new Set(packages.map((item) => item.trim()).filter(Boolean)),
-  );
+    console.log(`[${(index + 1).toString()}/${targets.length.toString()}]`);
 
-  console.log(`\n📱 Found ${uniquePackages.length} apps\n`);
-
-  for (let index = 0; index < uniquePackages.length; index++) {
-    const packageName = uniquePackages[index];
-
-    console.log(`[${index + 1}/${uniquePackages.length}]`);
-
-    const result = await syncApp(db, packageName);
+    const result = await syncTarget(db, provider, target);
 
     results.push(result);
 
-    if (index < uniquePackages.length - 1) {
+    if (index < targets.length - 1) {
       await sleep(getDelay());
     }
   }
@@ -130,25 +125,31 @@ export async function syncApps(
   return results;
 }
 
-async function saveApp(db: Db, app: ScrapedApp): Promise<void> {
+/**
+ * Upsert the latest app state keyed on (platform, appId). No `raw` payload is
+ * ever written. `packageName` is mirrored for back-compat but is NOT the
+ * identity.
+ */
+async function saveApp(db: Db, app: NormalizedApp): Promise<void> {
   const now = new Date();
 
-  await db.collection("apps").updateOne(
-    {
-      packageName: app.packageName,
-    },
-    {
-      $set: {
-        ...app,
-        updatedAt: now,
-      },
+  const document: Omit<AppDocument, "id" | "createdAt"> & {
+    packageName: string;
+  } = {
+    ...app,
+    packageName: app.appId,
+    updatedAt: now,
+  };
 
+  await db.collection<AppDocument>("apps").updateOne(
+    { platform: app.platform, appId: app.appId },
+    {
+      $set: document,
       $setOnInsert: {
+        id: `${app.platform}:${app.appId}`,
         createdAt: now,
       },
     },
-    {
-      upsert: true,
-    },
+    { upsert: true },
   );
 }

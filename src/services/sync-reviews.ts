@@ -1,6 +1,20 @@
-import { Db } from "mongodb";
+import type { Db } from "mongodb";
 
-import { scrapeReviews, type ScrapedReview } from "../scraper/reviews.js";
+import type { AppPlatform } from "../types/platform.js";
+import type { NormalizedReview } from "../types/review.js";
+import type {
+  AppStoreProvider,
+  GetReviewsOptions,
+  ReviewSort,
+} from "../providers/types.js";
+
+/**
+ * Target-driven review synchronization.
+ *
+ * Reviews are fetched through a provider (never directly from the scraper)
+ * and stored keyed on (platform, appId, reviewId). The `raw` store payload is
+ * never persisted.
+ */
 
 function getDelay(): number {
   const value = Number(process.env.REVIEW_DELAY_MS);
@@ -17,7 +31,8 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 export interface ReviewSyncResult {
-  packageName: string;
+  platform: AppPlatform;
+  appId: string;
   success: boolean;
   fetched: number;
   inserted: number;
@@ -25,60 +40,58 @@ export interface ReviewSyncResult {
   error?: string;
 }
 
+export interface SyncReviewsOptions {
+  num?: number;
+  sort?: ReviewSort;
+  maxPages?: number;
+}
+
 export async function syncReviews(
   db: Db,
-  packageName: string,
-  options: {
-    num?: number;
-    sort?: 1 | 2 | 3;
-    maxPages?: number;
-  } = {},
+  provider: AppStoreProvider,
+  appId: string,
+  options: SyncReviewsOptions = {},
 ): Promise<ReviewSyncResult> {
   const { num = 100, sort = 2, maxPages = 1 } = options;
+  const platform = provider.platform;
 
-  const normalizedPackageName = packageName.trim();
+  const normalizedAppId = appId.trim();
 
-  if (!normalizedPackageName) {
+  if (!normalizedAppId) {
     return {
-      packageName,
+      platform,
+      appId,
       success: false,
       fetched: 0,
       inserted: 0,
       updated: 0,
-      error: "Package name cannot be empty",
+      error: "appId cannot be empty",
     };
   }
 
   let paginationToken: string | undefined;
-
   let fetched = 0;
   let inserted = 0;
   let updated = 0;
 
   try {
-    console.log(`📝 Syncing reviews: ${normalizedPackageName}`);
+    console.log(`📝 Syncing reviews: ${platform}:${normalizedAppId}`);
 
     for (let page = 0; page < maxPages; page++) {
-      const result = await scrapeReviews({
-        packageName: normalizedPackageName,
+      const getOptions: GetReviewsOptions = { num, sort };
 
-        num,
-        sort,
+      if (paginationToken !== undefined) {
+        getOptions.nextPaginationToken = paginationToken;
+      }
 
-        nextPaginationToken: paginationToken,
-      });
+      const result = await provider.getReviews(normalizedAppId, getOptions);
 
       fetched += result.reviews.length;
 
-      /*
-       * Prevent processing the same review twice
-       * if Google Play returns duplicates.
-       */
       const uniqueReviews = deduplicateReviews(result.reviews);
 
       for (const review of uniqueReviews) {
         const stats = await saveReview(db, review);
-
         inserted += stats.inserted;
         updated += stats.updated;
       }
@@ -93,17 +106,14 @@ export async function syncReviews(
     }
 
     console.log(
-      `✓ ${normalizedPackageName}: ` +
-        `${fetched} reviews fetched, ` +
-        `${inserted} inserted, ` +
-        `${updated} updated`,
+      `✓ ${normalizedAppId}: ${fetched.toString()} fetched, ` +
+        `${inserted.toString()} inserted, ${updated.toString()} updated`,
     );
 
     return {
-      packageName: normalizedPackageName,
-
+      platform,
+      appId: normalizedAppId,
       success: true,
-
       fetched,
       inserted,
       updated,
@@ -111,19 +121,15 @@ export async function syncReviews(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    console.error(
-      `❌ Reviews failed for ` + `${normalizedPackageName}: ${message}`,
-    );
+    console.error(`❌ Reviews failed for ${normalizedAppId}: ${message}`);
 
     return {
-      packageName: normalizedPackageName,
-
+      platform,
+      appId: normalizedAppId,
       success: false,
-
       fetched,
       inserted,
       updated,
-
       error: message,
     };
   }
@@ -135,82 +141,50 @@ interface ReviewStats {
 }
 
 /**
- * Saves one review.
- *
- * reviewId is the primary deduplication key.
+ * Persist one review, keyed on (platform, appId, reviewId).
  */
-async function saveReview(db: Db, review: ScrapedReview): Promise<ReviewStats> {
+async function saveReview(
+  db: Db,
+  review: NormalizedReview,
+): Promise<ReviewStats> {
   if (!review.reviewId) {
     console.warn(
-      `⚠️ Skipping review without reviewId ` + `for ${review.packageName}`,
+      `⚠️ Skipping review without reviewId for ${review.platform}:${review.appId}`,
     );
 
-    return {
-      inserted: 0,
-      updated: 0,
-    };
+    return { inserted: 0, updated: 0 };
   }
 
   const collection = db.collection("reviews");
 
-  /*
-   * Never store raw Google Play response.
-   *
-   * This keeps the database smaller and avoids
-   * duplicate copies of the same information.
-   */
-  const { raw: _raw, ...cleanReview } = review;
-
-  const existing = await collection.findOne({
-    packageName: review.packageName,
-
+  const identity = {
+    platform: review.platform,
+    appId: review.appId,
     reviewId: review.reviewId,
-  });
+  };
+
+  const existing = await collection.findOne(identity);
 
   if (!existing) {
+    const now = new Date();
     await collection.insertOne({
-      ...cleanReview,
-
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      ...review,
+      createdAt: now,
+      updatedAt: now,
     });
 
-    return {
-      inserted: 1,
-      updated: 0,
-    };
+    return { inserted: 1, updated: 0 };
   }
 
-  /*
-   * Only update if something actually changed.
-   */
-  const hasChanged = hasReviewChanged(existing, cleanReview);
-
-  if (!hasChanged) {
-    return {
-      inserted: 0,
-      updated: 0,
-    };
+  if (!hasReviewChanged(existing, review)) {
+    return { inserted: 0, updated: 0 };
   }
 
-  await collection.updateOne(
-    {
-      packageName: review.packageName,
+  await collection.updateOne(identity, {
+    $set: { ...review, updatedAt: new Date() },
+  });
 
-      reviewId: review.reviewId,
-    },
-    {
-      $set: {
-        ...cleanReview,
-        updatedAt: new Date(),
-      },
-    },
-  );
-
-  return {
-    inserted: 0,
-    updated: 1,
-  };
+  return { inserted: 0, updated: 1 };
 }
 
 /**
@@ -218,9 +192,9 @@ async function saveReview(db: Db, review: ScrapedReview): Promise<ReviewStats> {
  */
 function hasReviewChanged(
   existing: Record<string, unknown>,
-  incoming: Omit<ScrapedReview, "raw">,
+  incoming: NormalizedReview,
 ): boolean {
-  const fields: Array<keyof Omit<ScrapedReview, "raw">> = [
+  const fields: Array<keyof NormalizedReview> = [
     "userName",
     "userImage",
     "rating",
@@ -232,7 +206,6 @@ function hasReviewChanged(
 
   for (const field of fields) {
     const existingValue = existing[field];
-
     const incomingValue = incoming[field];
 
     if (existingValue instanceof Date && incomingValue instanceof Date) {
@@ -265,27 +238,26 @@ function hasReviewChanged(
 }
 
 /**
- * Remove duplicate reviews returned within
- * the same scraping operation.
+ * Remove duplicate reviews returned within the same fetch.
  */
-function deduplicateReviews(reviews: ScrapedReview[]): ScrapedReview[] {
+function deduplicateReviews(
+  reviews: NormalizedReview[],
+): NormalizedReview[] {
   const seen = new Set<string>();
-
-  const result: ScrapedReview[] = [];
+  const result: NormalizedReview[] = [];
 
   for (const review of reviews) {
     if (!review.reviewId) {
       continue;
     }
 
-    const key = `${review.packageName}:${review.reviewId}`;
+    const key = `${review.platform}:${review.appId}:${review.reviewId}`;
 
     if (seen.has(key)) {
       continue;
     }
 
     seen.add(key);
-
     result.push(review);
   }
 

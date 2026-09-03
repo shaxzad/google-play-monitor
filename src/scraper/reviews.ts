@@ -1,45 +1,18 @@
-import { reviews as fetchReviews } from "@mradex77/google-play-scraper";
+import type { AppPlatform } from "../types/platform.js";
+import type { NormalizedReview } from "../types/review.js";
 
-export type ReviewSort = 1 | 2 | 3;
+/**
+ * Pure normalization for Google Play reviews.
+ *
+ * Like the app normalizer, this module has no dependency on the scraper
+ * library or the database. The provider fetches the raw payload and calls
+ * these functions.
+ */
 
-export interface ScrapedReview {
-  packageName: string;
-
-  reviewId?: string;
-
-  userName?: string;
-
-  userImage?: string;
-
-  rating?: number;
-
-  text?: string;
-
-  version?: string;
-
-  thumbsUp?: number;
-
-  publishedAt?: Date;
-
-  raw?: unknown;
-}
-
-export interface ReviewScrapeOptions {
-  packageName: string;
-
-  num?: number;
-
-  sort?: ReviewSort;
-
-  lang?: string;
-
-  country?: string;
-
-  nextPaginationToken?: string;
-}
+const GOOGLE_PLAY: AppPlatform = "google-play";
 
 function normalizeNumber(value: unknown): number | undefined {
-  if (typeof value === "number") {
+  if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
 
@@ -62,90 +35,77 @@ function normalizeString(value: unknown): string | undefined {
   return undefined;
 }
 
-function normalizeDate(value: unknown): Date | undefined {
+function normalizeReviewDate(value: unknown): Date | undefined {
   if (value instanceof Date) {
-    return value;
+    return Number.isNaN(value.getTime()) ? undefined : value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? undefined : date;
   }
 
   if (typeof value === "string") {
     const date = new Date(value);
 
-    if (!Number.isNaN(date.getTime())) {
-      return date;
-    }
+    return Number.isNaN(date.getTime()) ? undefined : date;
   }
 
   return undefined;
 }
 
-export async function scrapeReviews(options: ReviewScrapeOptions): Promise<{
-  reviews: ScrapedReview[];
-  nextPaginationToken?: string;
-}> {
-  const {
-    packageName,
+export interface NormalizeReviewOptions {
+  appId: string;
+  platform?: AppPlatform;
+}
 
-    num = 100,
+/**
+ * Normalize a single raw review object.
+ */
+export function normalizeReview(
+  raw: unknown,
+  options: NormalizeReviewOptions,
+): NormalizedReview {
+  const review =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 
-    sort = 2,
+  const normalized: NormalizedReview = {
+    platform: options.platform ?? GOOGLE_PLAY,
+    appId: options.appId,
 
-    lang = process.env.GOOGLE_PLAY_LANGUAGE || "en",
+    reviewId: normalizeString(review.id),
+    userName: normalizeString(review.userName),
+    userImage: normalizeString(review.userImage),
+    rating: normalizeNumber(review.score),
+    text: normalizeString(review.text),
+    version: normalizeString(review.version),
+    thumbsUp: normalizeNumber(review.thumbsUp),
+    publishedAt: normalizeReviewDate(review.date),
+  };
 
-    country = process.env.GOOGLE_PLAY_COUNTRY || "us",
+  return normalized;
+}
 
-    nextPaginationToken,
-  } = options;
+/**
+ * Normalize the raw result returned by the scraper's `reviews()` call into a
+ * clean page of reviews plus an optional pagination token.
+ */
+export function normalizeReviewsResult(
+  raw: unknown,
+  options: NormalizeReviewOptions,
+): { reviews: NormalizedReview[]; nextPaginationToken?: string } {
+  const result =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 
-  const result = await fetchReviews({
-    appId: packageName,
+  const rawReviews = Array.isArray(result.data) ? result.data : [];
 
-    num,
+  const reviews = rawReviews.map((item) => normalizeReview(item, options));
 
-    sort,
-
-    lang,
-
-    country,
-
-    nextPaginationToken,
-  });
-
-  const resultData = result as Record<string, unknown>;
-
-  const rawReviews = Array.isArray(resultData.data) ? resultData.data : [];
-
-  const normalizedReviews: ScrapedReview[] = rawReviews.map((item: unknown) => {
-    const review = item as Record<string, unknown>;
-
-    return {
-      packageName,
-
-      reviewId: normalizeString(review.id),
-
-      userName: normalizeString(review.userName),
-
-      userImage: normalizeString(review.userImage),
-
-      rating: normalizeNumber(review.score),
-
-      text: normalizeString(review.text),
-
-      version: normalizeString(review.version),
-
-      thumbsUp: normalizeNumber(review.thumbsUp),
-
-      publishedAt: normalizeDate(review.date),
-
-      raw: item,
-    };
-  });
+  const token = result.nextPaginationToken;
 
   return {
-    reviews: normalizedReviews,
-
-    nextPaginationToken:
-      typeof resultData.nextPaginationToken === "string"
-        ? resultData.nextPaginationToken
-        : undefined,
+    reviews,
+    nextPaginationToken: typeof token === "string" ? token : undefined,
   };
 }

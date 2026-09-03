@@ -1,8 +1,19 @@
-import { Db } from "mongodb";
-import type { ScrapedApp } from "../scraper/apps.js";
+import type { Db } from "mongodb";
 
-interface AppSnapshot {
-  packageName: string;
+import type { AppPlatform } from "../types/platform.js";
+import type { NormalizedApp } from "../types/app.js";
+
+/**
+ * Historical app metric snapshots.
+ *
+ * Identity is (platform, appId, scrapedAt). Every meaningful change produces
+ * a new immutable snapshot — snapshots are never overwritten. Change-gating
+ * avoids storing identical rows on every sync.
+ */
+
+export interface AppSnapshot {
+  platform: AppPlatform;
+  appId: string;
 
   title?: string;
   developer?: string;
@@ -19,42 +30,38 @@ interface AppSnapshot {
   currency?: string;
 
   version?: string;
-  updated?: string;
+  /** Store's "last updated" time, as a real Date (epoch-ms fix). */
+  updated?: Date;
 
   scrapedAt: Date;
 }
 
-function buildSnapshot(app: ScrapedApp): AppSnapshot {
-  return {
-    packageName: app.packageName,
-
-    title: app.title,
-    developer: app.developer,
-    genre: app.genre,
-
-    score: app.score,
-    ratings: app.ratings,
-    reviews: app.reviews,
-
-    installs: app.installs,
-
-    price: app.price,
-    free: app.free,
-    currency: app.currency,
-
-    version: app.version,
-    updated: app.updated,
-
-    scrapedAt: app.scrapedAt,
+function buildSnapshot(app: NormalizedApp, scrapedAt: Date): AppSnapshot {
+  const snapshot: AppSnapshot = {
+    platform: app.platform,
+    appId: app.appId,
+    scrapedAt,
   };
+
+  if (app.name !== undefined) snapshot.title = app.name;
+  if (app.developer !== undefined) snapshot.developer = app.developer;
+  if (app.genre !== undefined) snapshot.genre = app.genre;
+  if (app.score !== undefined) snapshot.score = app.score;
+  if (app.ratings !== undefined) snapshot.ratings = app.ratings;
+  if (app.reviews !== undefined) snapshot.reviews = app.reviews;
+  if (app.installs !== undefined) snapshot.installs = app.installs;
+  if (app.price !== undefined) snapshot.price = app.price;
+  if (app.free !== undefined) snapshot.free = app.free;
+  if (app.currency !== undefined) snapshot.currency = app.currency;
+  if (app.version !== undefined) snapshot.version = app.version;
+  if (app.updated !== undefined) snapshot.updated = app.updated;
+
+  return snapshot;
 }
 
 /**
- * Only these fields determine whether a new snapshot
- * is meaningful.
- *
- * This prevents storing identical snapshots every
- * time sync:all runs.
+ * Only these fields determine whether a new snapshot is meaningful. This
+ * prevents storing identical snapshots every time a sync runs.
  */
 function getComparableSnapshot(snapshot: AppSnapshot) {
   return {
@@ -66,11 +73,14 @@ function getComparableSnapshot(snapshot: AppSnapshot) {
     free: snapshot.free,
     currency: snapshot.currency,
     version: snapshot.version,
-    updated: snapshot.updated,
+    updated:
+      snapshot.updated instanceof Date
+        ? snapshot.updated.getTime()
+        : snapshot.updated,
   };
 }
 
-function snapshotsAreEqual(a: AppSnapshot, b: AppSnapshot): boolean {
+export function snapshotsAreEqual(a: AppSnapshot, b: AppSnapshot): boolean {
   return (
     JSON.stringify(getComparableSnapshot(a)) ===
     JSON.stringify(getComparableSnapshot(b))
@@ -78,26 +88,22 @@ function snapshotsAreEqual(a: AppSnapshot, b: AppSnapshot): boolean {
 }
 
 /**
- * Creates a snapshot only when meaningful app data
- * has changed since the previous snapshot.
+ * Create a snapshot only when meaningful app data has changed since the
+ * previous snapshot for this (platform, appId). Returns true if a new
+ * snapshot was inserted.
  */
 export async function createAppSnapshot(
   db: Db,
-  app: ScrapedApp,
+  app: NormalizedApp,
+  scrapedAt: Date = new Date(),
 ): Promise<boolean> {
   const collection = db.collection<AppSnapshot>("app_snapshots");
 
-  const snapshot = buildSnapshot(app);
+  const snapshot = buildSnapshot(app, scrapedAt);
 
   const previousSnapshot = await collection.findOne(
-    {
-      packageName: app.packageName,
-    },
-    {
-      sort: {
-        scrapedAt: -1,
-      },
-    },
+    { platform: app.platform, appId: app.appId },
+    { sort: { scrapedAt: -1 } },
   );
 
   if (previousSnapshot && snapshotsAreEqual(previousSnapshot, snapshot)) {
@@ -109,18 +115,17 @@ export async function createAppSnapshot(
   return true;
 }
 
-/**
- * Returns historical snapshots for an app.
- */
-export async function getAppHistory(db: Db, packageName: string, limit = 50) {
+/** Historical snapshots for an app, newest first. */
+export function getAppHistory(
+  db: Db,
+  platform: AppPlatform,
+  appId: string,
+  limit = 50,
+): Promise<AppSnapshot[]> {
   return db
     .collection<AppSnapshot>("app_snapshots")
-    .find({
-      packageName,
-    })
-    .sort({
-      scrapedAt: -1,
-    })
+    .find({ platform, appId })
+    .sort({ scrapedAt: -1 })
     .limit(limit)
     .toArray();
 }

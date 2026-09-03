@@ -1,13 +1,52 @@
 import type { Db } from "mongodb";
 
+import type { AppPlatform } from "../types/platform.js";
+import type { AffiliateTarget } from "../types/affiliate.js";
+import {
+  addTarget,
+  getActiveTargets,
+  getTarget,
+  listTargets,
+  setTargetStatus,
+} from "./targets.js";
+
+/**
+ * Back-compatibility shim.
+ *
+ * The concept of a "monitored app" has been superseded by the affiliate
+ * target registry (see {@link ./targets}). This module preserves the old
+ * function names so any existing caller keeps working, while delegating to
+ * the new `affiliate_targets` collection.
+ *
+ * IMPORTANT behavioural change: removal is now SOFT. `removeMonitoredApp`
+ * disables the target (status → "disabled") instead of deleting it, so
+ * history is never lost.
+ */
+
+const GOOGLE_PLAY: AppPlatform = "google-play";
+
 export interface MonitoredApp {
   packageName: string;
   name?: string;
   active: boolean;
-
   createdAt: Date;
   updatedAt: Date;
   lastSyncedAt?: Date;
+}
+
+function toMonitoredApp(target: AffiliateTarget): MonitoredApp {
+  const app: MonitoredApp = {
+    packageName: target.appId,
+    active: target.status === "active",
+    createdAt: target.createdAt,
+    updatedAt: target.updatedAt,
+  };
+
+  if (target.lastCheckedAt !== undefined) {
+    app.lastSyncedAt = target.lastCheckedAt;
+  }
+
+  return app;
 }
 
 export async function addMonitoredApp(
@@ -15,89 +54,66 @@ export async function addMonitoredApp(
   packageName: string,
   name?: string,
 ): Promise<MonitoredApp> {
-  const now = new Date();
+  const notes = name !== undefined ? `name: ${name}` : undefined;
 
-  const result = await db
-    .collection<MonitoredApp>("monitored_apps")
-    .findOneAndUpdate(
-      {
-        packageName,
-      },
-      {
-        $set: {
-          packageName,
-          ...(name !== undefined ? { name } : {}),
-          active: true,
-          updatedAt: now,
-        },
-        $setOnInsert: {
-          createdAt: now,
-        },
-      },
-      {
-        upsert: true,
-        returnDocument: "after",
-      },
-    );
+  const target = await addTarget(db, {
+    appId: packageName,
+    platform: GOOGLE_PLAY,
+    status: "active",
+    ...(notes !== undefined ? { notes } : {}),
+  });
 
-  if (!result) {
-    throw new Error(`Failed to add monitored app: ${packageName}`);
+  const app = toMonitoredApp(target);
+
+  if (name !== undefined) {
+    app.name = name;
   }
 
-  return result;
+  return app;
 }
 
-export async function removeMonitoredApp(
+/**
+ * Soft removal: disables the target rather than deleting it.
+ * Returns true if a target matched.
+ */
+export function removeMonitoredApp(
   db: Db,
   packageName: string,
 ): Promise<boolean> {
-  const result = await db.collection<MonitoredApp>("monitored_apps").deleteOne({
-    packageName,
-  });
-
-  return result.deletedCount > 0;
+  return setTargetStatus(db, GOOGLE_PLAY, packageName, "disabled");
 }
 
-export async function setMonitoredAppStatus(
+export function setMonitoredAppStatus(
   db: Db,
   packageName: string,
   active: boolean,
 ): Promise<boolean> {
-  const result = await db.collection<MonitoredApp>("monitored_apps").updateOne(
-    {
-      packageName,
-    },
-    {
-      $set: {
-        active,
-        updatedAt: new Date(),
-      },
-    },
+  return setTargetStatus(
+    db,
+    GOOGLE_PLAY,
+    packageName,
+    active ? "active" : "paused",
   );
-
-  return result.matchedCount > 0;
 }
 
 export async function getMonitoredApps(
   db: Db,
   activeOnly = false,
 ): Promise<MonitoredApp[]> {
-  const filter = activeOnly ? { active: true } : {};
+  const targets = activeOnly
+    ? await getActiveTargets(db, GOOGLE_PLAY)
+    : (await listTargets(db)).filter(
+        (target) => target.platform === GOOGLE_PLAY,
+      );
 
-  return db
-    .collection<MonitoredApp>("monitored_apps")
-    .find(filter)
-    .sort({
-      name: 1,
-    })
-    .toArray();
+  return targets.map(toMonitoredApp);
 }
 
 export async function getMonitoredApp(
   db: Db,
   packageName: string,
 ): Promise<MonitoredApp | null> {
-  return db.collection<MonitoredApp>("monitored_apps").findOne({
-    packageName,
-  });
+  const target = await getTarget(db, GOOGLE_PLAY, packageName);
+
+  return target ? toMonitoredApp(target) : null;
 }
