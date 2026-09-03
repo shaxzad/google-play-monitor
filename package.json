@@ -14,7 +14,7 @@
     "target:pause": "tsx src/index.ts target:pause",
     "target:disable": "tsx src/index.ts target:disable",
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./scripts/register-loader.mjs --test test/",
+    "test": "node --import ./scripts/register-loader.mjs --test test/*.test.ts",
     "discover": "tsx src/index.ts discover",
     "seed": "tsx src/index.ts seed",
     "dashboard:dev": "npm run --prefix dashboard dev",

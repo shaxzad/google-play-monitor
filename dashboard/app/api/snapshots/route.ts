@@ -18,22 +18,22 @@ export async function GET(request: NextRequest) {
 
     const snapshots = await db
       .collection('app_snapshots')
-      .find({ packageName })
-      .sort({ timestamp: -1 })
+      .find({ appId: packageName })
+      .sort({ scrapedAt: -1 })
       .limit(limit)
       .toArray();
 
     return NextResponse.json(
       {
         snapshots: snapshots.map((snap: any) => ({
-          packageName: snap.packageName,
+          packageName: snap.appId,
           snapshot: {
-            title: snap.snapshot?.title,
-            score: snap.snapshot?.score || 0,
-            ratings: snap.snapshot?.ratings || 0,
-            reviews: snap.snapshot?.reviews || 0,
+            title: snap.title,
+            score: snap.score || 0,
+            ratings: snap.ratings || 0,
+            reviews: snap.reviews || 0,
           },
-          timestamp: snap.timestamp,
+          timestamp: snap.scrapedAt,
         })),
         total: snapshots.length,
       },

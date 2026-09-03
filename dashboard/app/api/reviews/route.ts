@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
 
     const reviews = await db
       .collection('reviews')
-      .find({ packageName })
+      .find({ appId: packageName })
       .sort({ publishedAt: -1 })
       .limit(limit)
       .toArray();
@@ -26,9 +26,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         reviews: reviews.map((review: any) => ({
-          packageName: review.packageName,
-          title: review.title,
-          body: review.body,
+          packageName: review.appId,
+          title: review.userName,
+          body: review.text,
           rating: review.rating,
           publishedAt: review.publishedAt,
         })),

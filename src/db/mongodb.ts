@@ -141,7 +141,10 @@ async function createIndexes(db: Db): Promise<void> {
 
   await db.collection("app_snapshots").createIndex(
     { platform: 1, appId: 1, scrapedAt: -1 },
-    { name: "snapshots_platform_appId_scrapedAt_desc" },
+    {
+      unique: true,
+      name: "snapshots_platform_appId_scrapedAt_desc_unique",
+    },
   );
 
   /*
