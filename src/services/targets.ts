@@ -66,7 +66,9 @@ export async function validateGooglePlayTarget(
   appId: string,
 ): Promise<void> {
   if (provider.platform !== GOOGLE_PLAY) {
-    throw new Error(`Expected a Google Play provider, got ${provider.platform}`);
+    throw new Error(
+      `Expected a Google Play provider, got ${provider.platform}`,
+    );
   }
 
   await provider.getApp(validateGooglePlayAppId(appId));
@@ -214,10 +216,7 @@ export function getTarget(
 
 /** List all targets (any status), sorted by identity. */
 export function listTargets(db: Db): Promise<AffiliateTarget[]> {
-  return collection(db)
-    .find({})
-    .sort({ platform: 1, appId: 1 })
-    .toArray();
+  return collection(db).find({}).sort({ platform: 1, appId: 1 }).toArray();
 }
 
 /**
@@ -234,8 +233,5 @@ export function getActiveTargets(
     filter.platform = platform;
   }
 
-  return collection(db)
-    .find(filter)
-    .sort({ platform: 1, appId: 1 })
-    .toArray();
+  return collection(db).find(filter).sort({ platform: 1, appId: 1 }).toArray();
 }

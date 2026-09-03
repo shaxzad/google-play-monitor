@@ -5,7 +5,10 @@ dotenv.config();
 import type { Db } from "mongodb";
 
 import { connectDB, closeDB } from "./db/mongodb.js";
-import { GooglePlayProvider, isNotFoundError } from "./providers/google-play.js";
+import {
+  GooglePlayProvider,
+  isNotFoundError,
+} from "./providers/google-play.js";
 import type { AppStoreProvider } from "./providers/types.js";
 import { syncActiveTargets, syncTarget } from "./services/sync-apps.js";
 import { syncReviews } from "./services/sync-reviews.js";
@@ -84,10 +87,7 @@ async function main(): Promise<void> {
 
 /* -------------------------------------------------------------- app syncing */
 
-async function runAppSync(
-  db: Db,
-  provider: AppStoreProvider,
-): Promise<void> {
+async function runAppSync(db: Db, provider: AppStoreProvider): Promise<void> {
   console.log("\n🚀 App synchronization (active targets only)\n");
 
   const results = await syncActiveTargets(db, provider);
@@ -106,7 +106,9 @@ async function runAppSync(
   if (failed.length > 0) {
     console.log("\nFailed apps:");
     for (const result of failed) {
-      console.log(`- ${result.platform}:${result.appId}: ${result.error ?? ""}`);
+      console.log(
+        `- ${result.platform}:${result.appId}: ${result.error ?? ""}`,
+      );
     }
   }
 }
