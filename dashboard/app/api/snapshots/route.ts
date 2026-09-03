@@ -1,23 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { connectDB } from '@/lib/db';
+import { NextRequest, NextResponse } from "next/server";
+import { connectDB } from "@/lib/db";
 
 export async function GET(request: NextRequest) {
   try {
     const db = await connectDB();
     const { searchParams } = request.nextUrl;
-    
-    const packageName = searchParams.get('packageName');
-    const limit = parseInt(searchParams.get('limit') || '100', 10);
+
+    const packageName = searchParams.get("packageName");
+    const limit = parseInt(searchParams.get("limit") || "100", 10);
 
     if (!packageName) {
       return NextResponse.json(
-        { error: 'packageName is required' },
-        { status: 400 }
+        { error: "packageName is required" },
+        { status: 400 },
       );
     }
 
     const snapshots = await db
-      .collection('app_snapshots')
+      .collection("app_snapshots")
       .find({ appId: packageName })
       .sort({ scrapedAt: -1 })
       .limit(limit)
@@ -37,13 +37,13 @@ export async function GET(request: NextRequest) {
         })),
         total: snapshots.length,
       },
-      { status: 200 }
+      { status: 200 },
     );
   } catch (error) {
-    console.error('Error fetching snapshots:', error);
+    console.error("Error fetching snapshots:", error);
     return NextResponse.json(
-      { error: 'Failed to fetch snapshots' },
-      { status: 500 }
+      { error: "Failed to fetch snapshots" },
+      { status: 500 },
     );
   }
 }

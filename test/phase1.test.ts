@@ -4,8 +4,11 @@ import test from "node:test";
 import { epochMsToDate, normalizeApp } from "../src/scraper/apps.js";
 import { syncActiveTargets } from "../src/services/sync-apps.js";
 import {
+  addValidatedGooglePlayTarget,
   getActiveTargets,
   setTargetStatus,
+  validateGooglePlayAppId,
+  validateGooglePlayTarget,
 } from "../src/services/targets.js";
 import type { AppPlatform } from "../src/types/platform.js";
 
@@ -13,6 +16,7 @@ test("converts the numeric Google Play updated timestamp to a Date", () => {
   const updated = epochMsToDate(1_700_000_000_000);
 
   assert.ok(updated instanceof Date);
+  if (!updated) throw new Error("expected a valid Date");
   assert.equal(updated.getTime(), 1_700_000_000_000);
   assert.equal(typeof updated.getTime(), "number");
 });
@@ -37,6 +41,58 @@ test("normalized apps use platform plus appId and no affiliate blob", () => {
     app.provenance.sourceUrl,
     "https://play.google.com/store/apps/details?id=com.example.app",
   );
+});
+
+test("accepts a package ID and rejects a display name", () => {
+  assert.equal(validateGooglePlayAppId(" com.example.app "), "com.example.app");
+  assert.throws(
+    () => validateGooglePlayAppId("VideoPoker.com"),
+    /Invalid Google Play package ID/,
+  );
+});
+
+test("validates a package through the provider", async () => {
+  let fetches = 0;
+  const provider = {
+    platform: "google-play" as const,
+    getApp: async (appId: string) => {
+      fetches++;
+      return normalizeApp(
+        { title: "Example" },
+        { appId, fetchedAt: new Date() },
+      );
+    },
+    getReviews: async () => ({ reviews: [] }),
+  };
+
+  await validateGooglePlayTarget(provider, "com.example.app");
+  assert.equal(fetches, 1);
+});
+
+test("provider failure does not create a target", async () => {
+  let databaseTouched = false;
+  const provider = {
+    platform: "google-play" as const,
+    getApp: async () => {
+      throw new Error("NotFoundError: app not found");
+    },
+    getReviews: async () => ({ reviews: [] }),
+  };
+  const db = {
+    collection: () => {
+      databaseTouched = true;
+      throw new Error("target collection must not be touched");
+    },
+  } as any;
+
+  await assert.rejects(
+    () =>
+      addValidatedGooglePlayTarget(db, provider, {
+        appId: "com.missing.app",
+      }),
+    /NotFoundError/,
+  );
+  assert.equal(databaseTouched, false);
 });
 
 test("only active targets are returned for a platform", async () => {
@@ -64,7 +120,10 @@ test("only active targets are returned for a platform", async () => {
 
   const active = await getActiveTargets(db, "google-play" as AppPlatform);
 
-  assert.deepEqual(active.map((target) => target.appId), ["active"]);
+  assert.deepEqual(
+    active.map((target) => target.appId),
+    ["active"],
+  );
 });
 
 test("a failed target does not stop the remaining active targets", async () => {

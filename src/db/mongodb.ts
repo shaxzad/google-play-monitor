@@ -116,15 +116,19 @@ async function createIndexes(db: Db): Promise<void> {
    * ==================================================
    */
 
-  await db.collection("reviews").createIndex(
-    { platform: 1, appId: 1, reviewId: 1 },
-    { unique: true, name: "reviews_platform_appId_reviewId_unique" },
-  );
+  await db
+    .collection("reviews")
+    .createIndex(
+      { platform: 1, appId: 1, reviewId: 1 },
+      { unique: true, name: "reviews_platform_appId_reviewId_unique" },
+    );
 
-  await db.collection("reviews").createIndex(
-    { platform: 1, appId: 1, publishedAt: -1 },
-    { name: "reviews_platform_appId_publishedAt_desc" },
-  );
+  await db
+    .collection("reviews")
+    .createIndex(
+      { platform: 1, appId: 1, publishedAt: -1 },
+      { name: "reviews_platform_appId_publishedAt_desc" },
+    );
 
   await db
     .collection("reviews")
@@ -153,10 +157,12 @@ async function createIndexes(db: Db): Promise<void> {
    * ==================================================
    */
 
-  await db.collection("affiliate_targets").createIndex(
-    { platform: 1, appId: 1 },
-    { unique: true, name: "targets_platform_appId_unique" },
-  );
+  await db
+    .collection("affiliate_targets")
+    .createIndex(
+      { platform: 1, appId: 1 },
+      { unique: true, name: "targets_platform_appId_unique" },
+    );
 
   await db
     .collection("affiliate_targets")
@@ -219,16 +225,21 @@ async function createIndexes(db: Db): Promise<void> {
    * ==================================================
    */
 
-  await db.collection("app_candidates").createIndex(
-    { platform: 1, appId: 1 },
-    { unique: true, name: "candidates_platform_appId_unique" },
-  );
+  await db
+    .collection("app_candidates")
+    .createIndex(
+      { platform: 1, appId: 1 },
+      { unique: true, name: "candidates_platform_appId_unique" },
+    );
   await db
     .collection("app_candidates")
     .createIndex({ status: 1 }, { name: "candidates_status" });
   await db
     .collection("app_candidates")
-    .createIndex({ lastDiscoveredAt: -1 }, { name: "candidates_lastDiscoveredAt_desc" });
+    .createIndex(
+      { lastDiscoveredAt: -1 },
+      { name: "candidates_lastDiscoveredAt_desc" },
+    );
 
   console.log("✅ MongoDB indexes ready");
 }

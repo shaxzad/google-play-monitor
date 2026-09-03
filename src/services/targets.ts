@@ -6,6 +6,7 @@ import type {
   GeoCode,
   TargetStatus,
 } from "../types/affiliate.js";
+import type { AppStoreProvider } from "../providers/types.js";
 
 /**
  * Affiliate target registry.
@@ -43,6 +44,43 @@ export interface AddTargetInput {
   allowedGeos?: GeoCode[];
   restrictedGeos?: GeoCode[];
   notes?: string;
+}
+
+/** Validate the syntax required by a Google Play package/app ID. */
+export function validateGooglePlayAppId(appId: string): string {
+  const normalizedAppId = appId.trim();
+  const packagePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+
+  if (!packagePattern.test(normalizedAppId)) {
+    throw new Error(
+      `Invalid Google Play package ID "${appId}". Use the package ID after id= in the Google Play Store URL, for example com.example.app.`,
+    );
+  }
+
+  return normalizedAppId;
+}
+
+/** Confirm that Google Play has the package before it enters the registry. */
+export async function validateGooglePlayTarget(
+  provider: AppStoreProvider,
+  appId: string,
+): Promise<void> {
+  if (provider.platform !== GOOGLE_PLAY) {
+    throw new Error(`Expected a Google Play provider, got ${provider.platform}`);
+  }
+
+  await provider.getApp(validateGooglePlayAppId(appId));
+}
+
+/** Validate through the provider, then create/update the approved target. */
+export async function addValidatedGooglePlayTarget(
+  db: Db,
+  provider: AppStoreProvider,
+  input: AddTargetInput,
+): Promise<AffiliateTarget> {
+  const appId = validateGooglePlayAppId(input.appId);
+  await validateGooglePlayTarget(provider, appId);
+  return addTarget(db, { ...input, appId, platform: GOOGLE_PLAY });
 }
 
 /**

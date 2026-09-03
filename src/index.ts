@@ -5,14 +5,14 @@ dotenv.config();
 import type { Db } from "mongodb";
 
 import { connectDB, closeDB } from "./db/mongodb.js";
-import { GooglePlayProvider } from "./providers/google-play.js";
+import { GooglePlayProvider, isNotFoundError } from "./providers/google-play.js";
 import type { AppStoreProvider } from "./providers/types.js";
 import { syncActiveTargets, syncTarget } from "./services/sync-apps.js";
 import { syncReviews } from "./services/sync-reviews.js";
 import { seedMonitoredApps } from "./services/seed-monitored-apps.js";
 import { discoverApps } from "./services/discover-apps.js";
 import {
-  addTarget,
+  addValidatedGooglePlayTarget,
   disableTarget,
   getActiveTargets,
   getTarget,
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
         break;
 
       case "target:add":
-        await runTargetAdd(db, arg);
+        await runTargetAdd(db, provider, arg);
         break;
 
       case "target:pause":
@@ -220,18 +220,41 @@ async function listAllTargets(db: Db): Promise<void> {
 
 async function runTargetAdd(
   db: Db,
+  provider: AppStoreProvider,
   appId: string | undefined,
 ): Promise<void> {
   if (!appId) {
-    console.error("Usage: npm run dev target:add <appId>");
+    console.error(
+      "Usage: npm run dev target:add <appId>\nExample: npm run dev target:add com.example.app\nUse the package ID after id= in the Google Play Store URL.",
+    );
     process.exitCode = 1;
     return;
   }
 
-  const target = await addTarget(db, { appId, platform: PLATFORM });
-  console.log(
-    `✓ Target ${target.platform}:${target.appId} is now "${target.status}"`,
-  );
+  try {
+    const target = await addValidatedGooglePlayTarget(db, provider, {
+      appId,
+      platform: PLATFORM,
+    });
+
+    console.log(
+      `✓ Target ${target.platform}:${target.appId} is now "${target.status}"`,
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      console.error(
+        `Cannot add target "${appId}": Google Play package ID was not found. Provide the package ID after id= in the Google Play Store URL, for example com.example.app.`,
+      );
+    } else {
+      console.error(
+        `Cannot add target "${appId}": ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    process.exitCode = 1;
+  }
 }
 
 async function runTargetPause(
@@ -291,6 +314,8 @@ Sync (only ACTIVE targets are ever fetched):
 Targets:
   npm run dev targets              List all targets and their status
   npm run dev target:add <appId>   Add (or upsert) a target — active by default
+                                  Example: npm run dev target:add com.example.app
+                                  Use the package ID after id= in the Play Store URL
   npm run dev target:pause <appId> Pause a target (excluded from fetching)
   npm run dev target:disable <id>  Disable a target (soft; history preserved)
 
